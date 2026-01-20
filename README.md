@@ -1,4 +1,6 @@
-# Gobiomes (Pure Go)
+# Gobiomes (Pure Go) - [已废弃 / DEPRECATED]
+
+> **注意：本项目已停止维护并标记为已废弃。**
 
 这是一个完全使用 Go 语言重写的 Minecraft 生物群系和结构查找库，移植自著名的 C 语言库 [cubiomes](https://github.com/Cubitect/cubiomes)。
 
