@@ -1,0 +1,35 @@
+# Go build outputs
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.o
+*.out
+
+# Go test cache / coverage
+*.test
+*.coverprofile
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# --------
+# Legacy / C implementation (kept only for reference during refactor)
+# 目标：最终实现纯 Go 后，这些目录/文件将被删除
+# --------
+/cubiomes/
+/native/
+/cubiomes_all.c
+/helpers.c
+/helpers.h
+/cgo.go
+
+# (optional) if you generate a separate pure-go module or output dir
+/bin/
+/dist/
