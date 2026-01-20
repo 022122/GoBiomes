@@ -20,14 +20,15 @@ const (
 	RuinedPortalN StructureType = 12
 	AncientCity   StructureType = 13
 	Treasure      StructureType = 14
-	Mineshaft     StructureType = 15
-	DesertWell    StructureType = 16
-	Geode         StructureType = 17
-	Fortress      StructureType = 18
-	Bastion       StructureType = 19
-	EndCity       StructureType = 20
-	EndGateway    StructureType = 21
-	EndIsland     StructureType = 22
-	TrailRuins    StructureType = 23
-	TrialChambers StructureType = 24
+	Stronghold    StructureType = 15
+	Mineshaft     StructureType = 16
+	DesertWell    StructureType = 17
+	Geode         StructureType = 18
+	Fortress      StructureType = 19
+	Bastion       StructureType = 20
+	EndCity       StructureType = 21
+	EndGateway    StructureType = 22
+	EndIsland     StructureType = 23
+	TrailRuins    StructureType = 24
+	TrialChambers StructureType = 25
 )

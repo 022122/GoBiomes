@@ -147,16 +147,16 @@ func (bn *BiomeNoise) Sample(x, y, z int, flags uint32) int {
 	}
 
 	var np [6]uint64
-	np[NP_TEMPERATURE] = uint64(int32(bn.Climate[NP_TEMPERATURE].Sample(fx, 0, fz) * 10000.0))
-	np[NP_HUMIDITY] = uint64(int32(bn.Climate[NP_HUMIDITY].Sample(fx, 0, fz) * 10000.0))
-	np[NP_CONTINENTALNESS] = uint64(int32(bn.Climate[NP_CONTINENTALNESS].Sample(fx, 0, fz) * 10000.0))
-	np[NP_EROSION] = uint64(int32(bn.Climate[NP_EROSION].Sample(fx, 0, fz) * 10000.0))
-	np[NP_WEIRDNESS] = uint64(int32(bn.Climate[NP_WEIRDNESS].Sample(fx, 0, fz) * 10000.0))
+	np[NP_TEMPERATURE] = uint64(int64(int32(bn.Climate[NP_TEMPERATURE].Sample(fx, 0, fz) * 10000.0)))
+	np[NP_HUMIDITY] = uint64(int64(int32(bn.Climate[NP_HUMIDITY].Sample(fx, 0, fz) * 10000.0)))
+	np[NP_CONTINENTALNESS] = uint64(int64(int32(bn.Climate[NP_CONTINENTALNESS].Sample(fx, 0, fz) * 10000.0)))
+	np[NP_EROSION] = uint64(int64(int32(bn.Climate[NP_EROSION].Sample(fx, 0, fz) * 10000.0)))
+	np[NP_WEIRDNESS] = uint64(int64(int32(bn.Climate[NP_WEIRDNESS].Sample(fx, 0, fz) * 10000.0)))
 
 	// Depth calculation
 	if flags&SAMPLE_NO_DEPTH == 0 {
 		// TODO: Implement spline depth
-		np[NP_DEPTH] = uint64(int32((1.0 - float64(y*4)/128.0 - 83.0/160.0) * 10000.0))
+		np[NP_DEPTH] = uint64(int64(int32((1.0 - float64(y*4)/128.0 - 83.0/160.0) * 10000.0)))
 	} else {
 		np[NP_DEPTH] = 0
 	}
@@ -226,11 +226,11 @@ func get_np_dist(np []uint64, bt *BiomeTree, nodeIdx int) uint64 {
 
 	for i := 0; i < 6; i++ {
 		paramIdx := int((node >> (8 * i)) & 0xFF)
-		minVal := uint64(bt.Param[2*paramIdx+0])
-		maxVal := uint64(bt.Param[2*paramIdx+1])
+		minVal := int64(bt.Param[2*paramIdx+0])
+		maxVal := int64(bt.Param[2*paramIdx+1])
 
-		val := np[i]
-		var d uint64
+		val := int64(np[i])
+		var d int64
 		if val > maxVal {
 			d = val - maxVal
 		} else if val < minVal {
@@ -238,7 +238,7 @@ func get_np_dist(np []uint64, bt *BiomeTree, nodeIdx int) uint64 {
 		} else {
 			d = 0
 		}
-		ds += d * d
+		ds += uint64(d * d)
 	}
 	return ds
 }

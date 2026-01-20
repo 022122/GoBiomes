@@ -47,7 +47,8 @@ func (f *Finder) GetStructureConfig(st StructureType) (StructureConfig, error) {
 	s_village := StructureConfig{10387312, 34, 26, Village, 0, 0}
 	s_ocean_ruin := StructureConfig{14357621, 20, 12, OceanRuin, 0, 0}
 	s_shipwreck := StructureConfig{165745295, 24, 20, Shipwreck, 0, 0}
-	s_monument := StructureConfig{10387313, 32, 27, Monument, 0, 0}
+	s_monument_117 := StructureConfig{10387313, 32, 27, Monument, 0, 0}
+	s_monument := StructureConfig{10387313, 32, 24, Monument, 0, 0}
 	s_mansion := StructureConfig{10387319, 80, 60, Mansion, 0, 0}
 	s_ruined_portal := StructureConfig{34222645, 40, 25, RuinedPortal, 0, 0}
 	s_ruined_portal_n := StructureConfig{34222645, 40, 25, RuinedPortal, DimNether, 0}
@@ -131,7 +132,11 @@ func (f *Finder) GetStructureConfig(st StructureType) (StructureConfig, error) {
 		}
 		found = mc >= MC_1_16_1
 	case Monument:
-		sconf = s_monument
+		if mc <= MC_1_17 {
+			sconf = s_monument_117
+		} else {
+			sconf = s_monument
+		}
 		found = mc >= MC_1_8
 	case EndCity:
 		sconf = s_end_city
@@ -296,7 +301,15 @@ func (f *Finder) GetStructurePos(st StructureType, seed uint64, regX, regZ int) 
 		pos = getFeaturePos(config, seed, regX, regZ)
 		return &pos, nil
 
-	case Monument, Mansion:
+	case Monument:
+		if f.Version >= MC_1_18 {
+			pos = getFeaturePos(config, seed, regX, regZ)
+		} else {
+			pos = getLargeStructurePos(config, seed, regX, regZ)
+		}
+		return &pos, nil
+
+	case Mansion:
 		pos = getLargeStructurePos(config, seed, regX, regZ)
 		return &pos, nil
 
@@ -381,6 +394,9 @@ func (f *Finder) GetStructurePos(st StructureType, seed uint64, regX, regZ int) 
 			}
 			return nil, nil
 		}
+
+	case Stronghold:
+		return nil, fmt.Errorf("Stronghold search requires specialized logic (not region-based)")
 
 	default:
 		return nil, fmt.Errorf("GetStructurePos not implemented for %v in pure Go", st)
