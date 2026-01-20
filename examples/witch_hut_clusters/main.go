@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"math"
+	"os"
 	"sort"
+	"time"
 
 	"github.com/scriptlinestudios/gobiomes"
 	"github.com/scriptlinestudios/gobiomes/constants"
@@ -47,6 +50,8 @@ func main() {
 		maxZ   = flag.Int("maxz", 200000, "最大 Z(block)")
 		spawnR = flag.Float64("spawnR", 8, "刷怪范围半径近似(方块)，默认 8")
 		step   = flag.Float64("step", 2, "寻找中心点时的网格步长(方块)，越小越严格但越慢")
+		out    = flag.String("out", "witch_hut_clusters.json", "输出 JSON 路径")
+		quiet  = flag.Bool("quiet", false, "安静模式（不打印进度条）")
 	)
 	flag.Parse()
 
@@ -77,23 +82,34 @@ func main() {
 
 	// 1) 收集范围内所有可生成（biome viable）的女巫小屋位置
 	huts := make([]hut, 0, 1024)
+	regionsTotal := int64(rx1-rx0+1) * int64(rz1-rz0+1)
+	var regionsDone int64
+	lastPrint := time.Now()
+
 	for rz := rz0; rz <= rz1; rz++ {
 		for rx := rx0; rx <= rx1; rx++ {
 			p, err := finder.GetStructurePos(int(constants.SwampHut), *seed, rx, rz)
 			if err != nil {
 				panic(err)
 			}
-			if p == nil {
-				continue
+			if p != nil {
+				if p.X >= *minX && p.X <= *maxX && p.Z >= *minZ && p.Z <= *maxZ {
+					if gen.IsViableStructurePos(int(constants.SwampHut), p.X, p.Z, 0) {
+						huts = append(huts, hut{X: p.X, Z: p.Z})
+					}
+				}
 			}
-			if p.X < *minX || p.X > *maxX || p.Z < *minZ || p.Z > *maxZ {
-				continue
+
+			regionsDone++
+			if !*quiet && time.Since(lastPrint) > 200*time.Millisecond {
+				printProgress("scan regions", regionsDone, regionsTotal)
+				lastPrint = time.Now()
 			}
-			if !gen.IsViableStructurePos(int(constants.SwampHut), p.X, p.Z, 0) {
-				continue
-			}
-			huts = append(huts, hut{X: p.X, Z: p.Z})
 		}
+	}
+	if !*quiet {
+		printProgress("scan regions", regionsTotal, regionsTotal)
+		fmt.Println()
 	}
 
 	if len(huts) == 0 {
@@ -197,20 +213,95 @@ func main() {
 		return len(ai) < len(aj)
 	})
 
-	fmt.Printf("seed=%d mc=%d area=[%d,%d]x[%d,%d] huts=%d\n", *seed, *mc, *minX, *maxX, *minZ, *maxZ, len(huts))
-	fmt.Printf("spawnR≈%.2f outerR=%.0f innerR=%.0f neighborDist<=%.2f\n", *spawnR, outerR, innerR, neighborDist)
+	// 输出 JSON
+	type jsonHut struct {
+		X int `json:"x"`
+		Z int `json:"z"`
+	}
+	type jsonCenter struct {
+		X float64 `json:"x"`
+		Z float64 `json:"z"`
+	}
+	type jsonCluster struct {
+		Size   int         `json:"size"`
+		Huts   []jsonHut   `json:"huts"`
+		Center *jsonCenter `json:"center,omitempty"`
+	}
+	type jsonOut struct {
+		Seed     uint64        `json:"seed"`
+		MC       int           `json:"mc"`
+		Area     [4]int        `json:"area"` // minx,maxx,minz,maxz
+		SpawnR   float64       `json:"spawnR"`
+		OuterR   float64       `json:"outerR"`
+		InnerR   float64       `json:"innerR"`
+		HutCount int           `json:"hutCount"`
+		Clusters []jsonCluster `json:"clusters"`
+	}
+
+	outObj := jsonOut{
+		Seed:     *seed,
+		MC:       *mc,
+		Area:     [4]int{*minX, *maxX, *minZ, *maxZ},
+		SpawnR:   *spawnR,
+		OuterR:   outerR,
+		InnerR:   innerR,
+		HutCount: len(huts),
+		Clusters: make([]jsonCluster, 0, len(res)),
+	}
 
 	for _, r := range res {
-		fmt.Printf("\n[%d-hut] ", r.size)
+		c := jsonCluster{Size: r.size, Huts: make([]jsonHut, 0, len(r.idx))}
 		if r.size == 4 && r.center != nil {
-			fmt.Printf("center≈(%.1f,%.1f) ", r.center.X, r.center.Z)
+			c.Center = &jsonCenter{X: r.center.X, Z: r.center.Z}
 		}
-		fmt.Println()
 		for _, id := range r.idx {
 			h := huts[id]
-			fmt.Printf("  hut: (%d, %d)\n", h.X, h.Z)
+			c.Huts = append(c.Huts, jsonHut{X: h.X, Z: h.Z})
+		}
+		outObj.Clusters = append(outObj.Clusters, c)
+	}
+
+	data, err := json.MarshalIndent(outObj, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(*out, data, 0o644); err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("seed=%d mc=%d area=[%d,%d]x[%d,%d] huts=%d clusters=%d\n", *seed, *mc, *minX, *maxX, *minZ, *maxZ, len(huts), len(outObj.Clusters))
+	fmt.Printf("已输出 JSON: %s\n", *out)
+}
+
+func printProgress(stage string, done, total int64) {
+	if total <= 0 {
+		return
+	}
+	pct := float64(done) / float64(total)
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 1 {
+		pct = 1
+	}
+	barW := 30
+	filled := int(math.Round(pct * float64(barW)))
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > barW {
+		filled = barW
+	}
+	bar := make([]byte, 0, barW)
+	for i := 0; i < barW; i++ {
+		if i < filled {
+			bar = append(bar, '=')
+		} else {
+			bar = append(bar, '-')
 		}
 	}
+	// \r 覆盖当前行
+	fmt.Printf("\r[%s] %s %6.2f%% (%d/%d)", string(bar), stage, pct*100, done, total)
 }
 
 func appendBySize(out *[]result, huts []hut, idxs []int, outerR, innerR, spawnR, step float64) {
