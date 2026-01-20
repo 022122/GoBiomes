@@ -1,10 +1,10 @@
 package main
 
 import (
+	"container/heap"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"html/template"
 	"math"
 	"os"
 	"sort"
@@ -13,6 +13,16 @@ import (
 	"github.com/scriptlinestudios/gobiomes"
 	"github.com/scriptlinestudios/gobiomes/constants"
 )
+
+// trial_chambers_pairs
+// - 搜索 40w*40w 区域内（默认 [-200000,200000] x [-200000,200000]）的试炼密室(TrialChambers)
+// - 找“二联”：两处结构生成尝试点的距离 <= maxd（默认 150）
+// - 权重机制：weight = maxd - dist（越近越靠上）
+// - 输出：JSON 或 Markdown（避免 HTML 打开卡顿）
+//
+// 重要说明：
+// 试炼密室的生成尝试点由“区域网格”决定，最小理论间距大概率远大于 150。
+// 程序会打印 regionSize/chunkRange 推导的 minAxisDist，帮助判断 pairs=0 是否正常。
 
 type pos struct {
 	X int `json:"x"`
@@ -26,28 +36,32 @@ type pair struct {
 	Weight float64 `json:"weight"`
 }
 
-type htmlModel struct {
-	Seed        uint64
-	MC          int
-	Area        [4]int
-	MaxDist     float64
-	Total       int
-	Pairs       []pair
-	PairsJSON   template.JS
-	GeneratedAt string
+type outJSON struct {
+	Seed        uint64  `json:"seed"`
+	MC          int     `json:"mc"`
+	Area        [4]int  `json:"area"` // minx,maxx,minz,maxz
+	MaxDist     float64 `json:"maxDist"`
+	MinAxisDist float64 `json:"minAxisDist"`
+	Chambers    int     `json:"chambers"`
+	PairsTotal  int64   `json:"pairsTotal"`
+	TopK        int     `json:"topK"`
+	TopPairs    []pair  `json:"topPairs"`
+	GeneratedAt string  `json:"generatedAt"`
 }
 
 func main() {
 	var (
-		seed  = flag.Uint64("seed", 20251223, "世界种子(64-bit)")
-		mc    = flag.Int("mc", constants.MC_1_21_1, "版本常量，见 constants/versions.go")
-		minX  = flag.Int("minx", -200000, "最小 X(block)")
-		maxX  = flag.Int("maxx", 200000, "最大 X(block)")
-		minZ  = flag.Int("minz", -200000, "最小 Z(block)")
-		maxZ  = flag.Int("maxz", 200000, "最大 Z(block)")
-		maxD  = flag.Float64("maxd", 150, "二联间隔最大距离(方块)")
-		out   = flag.String("out", "trial_chambers_pairs.html", "输出 HTML 路径")
-		quiet = flag.Bool("quiet", false, "安静模式（不打印进度条）")
+		seed    = flag.Uint64("seed", 20251223, "世界种子(64-bit)")
+		mc      = flag.Int("mc", constants.MC_1_21_1, "版本常量，见 constants/versions.go")
+		minX    = flag.Int("minx", -200000, "最小 X(block)")
+		maxX    = flag.Int("maxx", 200000, "最大 X(block)")
+		minZ    = flag.Int("minz", -200000, "最小 Z(block)")
+		maxZ    = flag.Int("maxz", 200000, "最大 Z(block)")
+		maxD    = flag.Float64("maxd", 150, "二联间隔最大距离(方块)")
+		format  = flag.String("format", "json", "输出格式: json 或 md")
+		outPath = flag.String("out", "trial_chambers_pairs.json", "输出文件路径")
+		topK    = flag.Int("top", 5000, "只输出 TopK 对（按权重排序）；计算时仍统计 pairsTotal")
+		quiet   = flag.Bool("quiet", false, "安静模式（不打印进度条/提示）")
 	)
 	flag.Parse()
 
@@ -60,12 +74,14 @@ func main() {
 	if *maxD <= 0 {
 		panic("maxd must be > 0")
 	}
+	if *topK < 1 {
+		*topK = 1
+	}
 
 	finder := gobiomes.NewFinder(*mc)
 	gen := gobiomes.NewGenerator(*mc, 0)
 	gen.ApplySeed(*seed, int(constants.DimOverworld))
 
-	// Trial Chambers 属于 overworld 结构
 	sc, err := finder.GetStructureConfig(int(constants.TrialChambers))
 	if err != nil {
 		panic(err)
@@ -75,16 +91,13 @@ func main() {
 		panic("invalid region size")
 	}
 
-	// Debug/解释：基于 structure config 估算“理论最小间距”，用于判断为何 pairs 可能为 0。
-	// cubiomes 的 getStructurePos 最终：pos = ((reg*regionSize + off) << 4)
-	// 其中 off 在 [0, chunkRange-1]。
-	// 因此相邻区域最小轴向距离（blocks）≈ (regionSize - (chunkRange-1)) * 16。
+	// 理论最小轴向间距（blocks）≈ (regionSize - (chunkRange-1)) * 16
 	minAxisDist := float64(int(sc.RegionSize)-int(sc.ChunkRange)+1) * 16
 	if !*quiet {
 		fmt.Printf("TrialChambers config: regionSize=%d chunks, chunkRange=%d chunks, minAxisDist≈%.0f blocks\n",
 			sc.RegionSize, sc.ChunkRange, minAxisDist)
 		if minAxisDist > *maxD {
-			fmt.Printf("提示：minAxisDist(≈%.0f) > maxd(%.0f)，理论上不可能存在两处生成尝试距离≤maxd，因此 pairs=0 属于正常结果。\n",
+			fmt.Printf("提示：minAxisDist(≈%.0f) > maxd(%.0f)，理论上很难/不可能存在二联，因此 pairs=0 可能是正常结果。\n",
 				minAxisDist, *maxD)
 		}
 	}
@@ -95,12 +108,10 @@ func main() {
 	rz1 := floorDiv(*maxZ, regionBlocks)
 
 	// 1) 扫描区域内所有“可行”的试炼密室位置
-	var (
-		positions    = make([]pos, 0, 1024)
-		totalRegions = int64(rx1-rx0+1) * int64(rz1-rz0+1)
-		doneRegions  int64
-		lastPrint    = time.Now()
-	)
+	positions := make([]pos, 0, 1024)
+	regionsTotal := int64(rx1-rx0+1) * int64(rz1-rz0+1)
+	var regionsDone int64
+	lastPrint := time.Now()
 
 	for rz := rz0; rz <= rz1; rz++ {
 		for rx := rx0; rx <= rx1; rx++ {
@@ -116,15 +127,15 @@ func main() {
 				}
 			}
 
-			doneRegions++
+			regionsDone++
 			if !*quiet && time.Since(lastPrint) > 200*time.Millisecond {
-				printProgress("scan regions", doneRegions, totalRegions)
+				printProgress("scan regions", regionsDone, regionsTotal)
 				lastPrint = time.Now()
 			}
 		}
 	}
 	if !*quiet {
-		printProgress("scan regions", totalRegions, totalRegions)
+		printProgress("scan regions", regionsTotal, regionsTotal)
 		fmt.Println()
 	}
 
@@ -133,7 +144,7 @@ func main() {
 		return
 	}
 
-	// 2) 二联查找：网格加速
+	// 2) 二联查找：网格加速 + TopK 小顶堆（避免输出/内存爆炸）
 	cellSize := int(math.Ceil(*maxD))
 	if cellSize < 1 {
 		cellSize = 1
@@ -145,9 +156,11 @@ func main() {
 		cells[[2]int{cx, cz}] = append(cells[[2]int{cx, cz}], i)
 	}
 
-	pairs := make([]pair, 0, 1024)
+	pq := make(pairHeap, 0, *topK)
 	var checked int64
+	var pairsTotal int64
 	lastPrint = time.Now()
+
 	for i, a := range positions {
 		cx := floorDiv(a.X, cellSize)
 		cz := floorDiv(a.Z, cellSize)
@@ -161,9 +174,9 @@ func main() {
 					b := positions[j]
 					d := dist(a, b)
 					if d <= *maxD {
-						// 权重机制：越近越大。这里用 (maxD - d) 线性权重。
+						pairsTotal++
 						w := (*maxD - d)
-						pairs = append(pairs, pair{A: a, B: b, Dist: d, Weight: w})
+						pushTopK(&pq, pair{A: a, B: b, Dist: d, Weight: w}, *topK)
 					}
 					checked++
 				}
@@ -171,52 +184,86 @@ func main() {
 		}
 
 		if !*quiet && time.Since(lastPrint) > 300*time.Millisecond {
-			// 这里 total 用 positions^2/2 的近似会很大，不太准，改成“已检查候选数”。
-			fmt.Printf("\r[calc pairs] checked=%d pairs=%d", checked, len(pairs))
+			fmt.Printf("\r[calc pairs] checked=%d pairsTotal=%d topK=%d", checked, pairsTotal, len(pq))
 			lastPrint = time.Now()
 		}
 	}
 	if !*quiet {
-		fmt.Printf("\r[calc pairs] checked=%d pairs=%d\n", checked, len(pairs))
+		fmt.Printf("\r[calc pairs] checked=%d pairsTotal=%d topK=%d\n", checked, pairsTotal, len(pq))
 	}
 
-	sort.Slice(pairs, func(i, j int) bool {
-		if pairs[i].Weight != pairs[j].Weight {
-			return pairs[i].Weight > pairs[j].Weight
+	// 堆 -> 切片 -> 按权重降序输出
+	topPairs := make([]pair, 0, len(pq))
+	for pq.Len() > 0 {
+		p := heap.Pop(&pq).(pair)
+		topPairs = append(topPairs, p)
+	}
+	// pq 是小顶堆，pop 出来从“最差”到“最好”，这里反转
+	reversePairs(topPairs)
+
+	// 再做一次稳定排序（确保同权重按距离升序）
+	sort.SliceStable(topPairs, func(i, j int) bool {
+		if topPairs[i].Weight != topPairs[j].Weight {
+			return topPairs[i].Weight > topPairs[j].Weight
 		}
-		return pairs[i].Dist < pairs[j].Dist
+		return topPairs[i].Dist < topPairs[j].Dist
 	})
 
-	pairsJSONBytes, _ := json.Marshal(pairs)
-
-	m := htmlModel{
+	if err := writeOut(*format, *outPath, outJSON{
 		Seed:        *seed,
 		MC:          *mc,
 		Area:        [4]int{*minX, *maxX, *minZ, *maxZ},
 		MaxDist:     *maxD,
-		Total:       len(positions),
-		Pairs:       pairs,
-		PairsJSON:   template.JS(pairsJSONBytes),
+		MinAxisDist: minAxisDist,
+		Chambers:    len(positions),
+		PairsTotal:  pairsTotal,
+		TopK:        *topK,
+		TopPairs:    topPairs,
 		GeneratedAt: time.Now().Format(time.RFC3339),
-	}
-
-	if err := writeHTML(*out, m); err != nil {
+	}); err != nil {
 		panic(err)
 	}
 
-	fmt.Printf("seed=%d mc=%d area=[%d,%d]x[%d,%d] chambers=%d pairs<=%.0f=%d\n",
-		m.Seed, m.MC, m.Area[0], m.Area[1], m.Area[2], m.Area[3], m.Total, m.MaxDist, len(m.Pairs))
-	fmt.Printf("已输出 HTML: %s\n", *out)
+	fmt.Printf("seed=%d mc=%d area=[%d,%d]x[%d,%d] chambers=%d pairs<=%.0f total=%d top=%d\n",
+		*seed, *mc, *minX, *maxX, *minZ, *maxZ, len(positions), *maxD, pairsTotal, len(topPairs))
+	fmt.Printf("已输出: %s\n", *outPath)
 }
 
-func writeHTML(path string, m htmlModel) error {
-	tpl := template.Must(template.New("page").Parse(pageHTML))
-	f, err := os.Create(path)
-	if err != nil {
-		return err
+func writeOut(format, path string, o outJSON) error {
+	switch format {
+	case "json":
+		b, err := json.MarshalIndent(o, "", "  ")
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(path, b, 0o644)
+	case "md", "markdown":
+		return os.WriteFile(path, []byte(renderMD(o)), 0o644)
+	default:
+		return fmt.Errorf("unknown format: %s (use json|md)", format)
 	}
-	defer f.Close()
-	return tpl.Execute(f, m)
+}
+
+func renderMD(o outJSON) string {
+	s := "# 试炼密室二联（Trial Chambers Pairs）\n\n"
+	s += fmt.Sprintf("- seed: `%d`\n", o.Seed)
+	s += fmt.Sprintf("- mc: `%d`\n", o.MC)
+	s += fmt.Sprintf("- area: `[%d,%d]×[%d,%d]`\n", o.Area[0], o.Area[1], o.Area[2], o.Area[3])
+	s += fmt.Sprintf("- maxDist: `%.0f`\n", o.MaxDist)
+	s += fmt.Sprintf("- minAxisDist(estimated): `%.0f`\n", o.MinAxisDist)
+	s += fmt.Sprintf("- chambers: `%d`\n", o.Chambers)
+	s += fmt.Sprintf("- pairsTotal: `%d`\n", o.PairsTotal)
+	s += fmt.Sprintf("- topK: `%d`\n", o.TopK)
+	s += fmt.Sprintf("- generatedAt: `%s`\n\n", o.GeneratedAt)
+
+	s += "## Top Pairs\n\n"
+	s += "| # | A(x,z) | B(x,z) | dist | weight |\n"
+	s += "|---:|---|---|---:|---:|\n"
+	for i, p := range o.TopPairs {
+		s += fmt.Sprintf("| %d | %d,%d | %d,%d | %.2f | %.2f |\n",
+			i+1, p.A.X, p.A.Z, p.B.X, p.B.Z, p.Dist, p.Weight)
+	}
+	return s
 }
 
 func dist(a, b pos) float64 {
@@ -264,79 +311,54 @@ func printProgress(stage string, done, total int64) {
 	fmt.Printf("\r[%s] %s %6.2f%% (%d/%d)", string(bar), stage, pct*100, done, total)
 }
 
-const pageHTML = `<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Trial Chambers Pairs</title>
-  <style>
-    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 20px; }
-    table { border-collapse: collapse; width: 100%; }
-    th, td { border: 1px solid #ddd; padding: 8px; }
-    th { background: #f5f5f5; text-align: left; }
-    .meta { color: #444; margin-bottom: 12px; }
-    .small { color: #666; font-size: 12px; }
-    input { padding: 6px; width: 220px; }
-    .row { display:flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-    .pill { padding: 2px 8px; border-radius: 999px; background: #eef; display: inline-block; }
-    button { padding: 6px 10px; }
-  </style>
-</head>
-<body>
-  <h1>试炼密室二联（间隔≤{{printf "%.0f" .MaxDist}}）</h1>
-  <div class="meta">
-    <div>seed=<span class="pill">{{.Seed}}</span> mc=<span class="pill">{{.MC}}</span> area=<span class="pill">[{{index .Area 0}},{{index .Area 1}}]×[{{index .Area 2}},{{index .Area 3}}]</span></div>
-    <div class="small">generatedAt={{.GeneratedAt}} | chambers={{.Total}} | pairs={{len .Pairs}}</div>
-  </div>
+// --------------------
+// TopK heap (min-heap)
+// --------------------
 
-  <div class="row">
-    <label>最小权重(越大越近)：<input id="minW" type="number" step="1" value="0"></label>
-    <label>最大距离：<input id="maxD" type="number" step="1" value="{{printf "%.0f" .MaxDist}}"></label>
-    <button onclick="render()">筛选</button>
-    <span class="small">提示：权重=MaxDist-距离；越近越靠上</span>
-  </div>
+type pairHeap []pair
 
-  <table>
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>A (x,z)</th>
-        <th>B (x,z)</th>
-        <th>距离</th>
-        <th>权重</th>
-      </tr>
-    </thead>
-    <tbody id="tbody"></tbody>
-  </table>
+func (h pairHeap) Len() int { return len(h) }
 
-  <script>
-    const data = {{.PairsJSON}};
+// Less implements min-heap: the "worst" (lowest weight, then higher dist) is on top.
+func (h pairHeap) Less(i, j int) bool {
+	if h[i].Weight != h[j].Weight {
+		return h[i].Weight < h[j].Weight
+	}
+	return h[i].Dist > h[j].Dist
+}
 
-    function render() {
-      const minW = Number(document.getElementById('minW').value || 0);
-      const maxD = Number(document.getElementById('maxD').value || 0);
+func (h pairHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 
-      const tbody = document.getElementById('tbody');
-      tbody.innerHTML = '';
+func (h *pairHeap) Push(x any) {
+	*h = append(*h, x.(pair))
+}
 
-      let idx = 0;
-      for (const p of data) {
-        if (p.weight < minW) continue;
-        if (maxD > 0 && p.dist > maxD) continue;
-        idx++;
-        const tr = document.createElement('tr');
-        tr.innerHTML =
-          '<td>' + idx + '</td>' +
-          '<td>' + p.a.x + ', ' + p.a.z + '</td>' +
-          '<td>' + p.b.x + ', ' + p.b.z + '</td>' +
-          '<td>' + p.dist.toFixed(2) + '</td>' +
-          '<td>' + p.weight.toFixed(2) + '</td>';
-        tbody.appendChild(tr);
-      }
-    }
+func (h *pairHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
 
-    render();
-  </script>
-</body>
-</html>`
+func pushTopK(h *pairHeap, p pair, k int) {
+	if k <= 0 {
+		return
+	}
+	if h.Len() < k {
+		heap.Push(h, p)
+		return
+	}
+	// if p is better than the worst (root), replace
+	worst := (*h)[0]
+	if p.Weight > worst.Weight || (p.Weight == worst.Weight && p.Dist < worst.Dist) {
+		(*h)[0] = p
+		heap.Fix(h, 0)
+	}
+}
+
+func reversePairs(a []pair) {
+	for i, j := 0, len(a)-1; i < j; i, j = i+1, j-1 {
+		a[i], a[j] = a[j], a[i]
+	}
+}
