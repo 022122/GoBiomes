@@ -1,4 +1,4 @@
-package constants
+package gobiomes
 
 // Biome 生物群系类型
 type Biome int
@@ -138,3 +138,170 @@ const (
 	CherryGrove                   Biome = 196
 	PaleGarden                    Biome = 197
 )
+
+// Biome Categories
+const (
+	Oceanic  Biome = 0
+	Warm     Biome = 1
+	Lush     Biome = 2
+	Cold     Biome = 3
+	Freezing Biome = 4
+)
+
+func (b Biome) IsOceanic() bool {
+	switch b {
+	case Ocean, FrozenOcean, DeepOcean, WarmOcean, LukewarmOcean, ColdOcean,
+		DeepWarmOcean, DeepLukewarmOcean, DeepColdOcean, DeepFrozenOcean:
+		return true
+	}
+	return false
+}
+
+func (b Biome) IsShallowOcean() bool {
+	switch b {
+	case Ocean, FrozenOcean, WarmOcean, LukewarmOcean, ColdOcean:
+		return true
+	}
+	return false
+}
+
+func (b Biome) IsDeepOcean() bool {
+	switch b {
+	case DeepOcean, DeepWarmOcean, DeepLukewarmOcean, DeepColdOcean, DeepFrozenOcean:
+		return true
+	}
+	return false
+}
+
+func (b Biome) IsSnowy() bool {
+	switch b {
+	case FrozenOcean, FrozenRiver, SnowyTundra, SnowyMountains, SnowyBeach,
+		SnowyTaiga, SnowyTaigaHills, IceSpikes, SnowyTaigaMountains:
+		return true
+	}
+	return false
+}
+
+func (b Biome) IsMesa() bool {
+	switch b {
+	case Badlands, ErodedBadlands, ModifiedWoodedBadlandsPlateau,
+		ModifiedBadlandsPlateau, WoodedBadlandsPlateau, BadlandsPlateau:
+		return true
+	}
+	return false
+}
+
+func GetCategory(mc int, id Biome) Biome {
+	switch id {
+	case Beach, SnowyBeach:
+		return Beach
+	case Desert, DesertHills, DesertLakes:
+		return Desert
+	case Mountains, MountainEdge, WoodedMountains, GravellyMountains, ModifiedGravellyMountains:
+		return Mountains
+	case Forest, WoodedHills, BirchForest, BirchForestHills, DarkForest, FlowerForest,
+		TallBirchForest, TallBirchHills, DarkForestHills:
+		return Forest
+	case SnowyTundra, SnowyMountains, IceSpikes:
+		return SnowyTundra
+	case Jungle, JungleHills, JungleEdge, ModifiedJungle, ModifiedJungleEdge, BambooJungle, BambooJungleHills:
+		return Jungle
+	case Badlands, ErodedBadlands, ModifiedWoodedBadlandsPlateau, ModifiedBadlandsPlateau:
+		return Mesa
+	case WoodedBadlandsPlateau, BadlandsPlateau:
+		if mc <= MC_1_15 {
+			return Mesa
+		}
+		return BadlandsPlateau
+	case MushroomFields, MushroomFieldShore:
+		return MushroomFields
+	case StoneShore:
+		return StoneShore
+	case Ocean, FrozenOcean, DeepOcean, WarmOcean, LukewarmOcean, ColdOcean,
+		DeepWarmOcean, DeepLukewarmOcean, DeepColdOcean, DeepFrozenOcean:
+		return Ocean
+	case Plains, SunflowerPlains:
+		return Plains
+	case River, FrozenRiver:
+		return River
+	case Savanna, SavannaPlateau, ShatteredSavanna, ShatteredSavannaPlateau:
+		return Savanna
+	case Swamp, SwampHills:
+		return Swamp
+	case Taiga, TaigaHills, SnowyTaiga, SnowyTaigaHills, GiantTreeTaiga, GiantTreeTaigaHills,
+		TaigaMountains, SnowyTaigaMountains, GiantSpruceTaiga, GiantSpruceTaigaHills:
+		return Taiga
+	case NetherWastes, SoulSandValley, CrimsonForest, WarpedForest, BasaltDeltas:
+		return NetherWastes
+	default:
+		return None
+	}
+}
+
+func AreSimilar(mc int, id1, id2 Biome) bool {
+	if id1 == id2 {
+		return true
+	}
+	if mc <= MC_1_15 {
+		if (id1 == WoodedBadlandsPlateau || id1 == BadlandsPlateau) &&
+			(id2 == WoodedBadlandsPlateau || id2 == BadlandsPlateau) {
+			return true
+		}
+	}
+	return GetCategory(mc, id1) == GetCategory(mc, id2)
+}
+
+func GetMutated(mc int, id Biome) Biome {
+	switch id {
+	case Plains:
+		return SunflowerPlains
+	case Desert:
+		return DesertLakes
+	case Mountains:
+		return GravellyMountains
+	case Forest:
+		return FlowerForest
+	case Taiga:
+		return TaigaMountains
+	case Swamp:
+		return SwampHills
+	case SnowyTundra:
+		return IceSpikes
+	case Jungle:
+		return ModifiedJungle
+	case JungleEdge:
+		return ModifiedJungleEdge
+	case BirchForest:
+		if mc >= MC_1_9 && mc <= MC_1_10 {
+			return TallBirchHills
+		}
+		return TallBirchForest
+	case BirchForestHills:
+		if mc >= MC_1_9 && mc <= MC_1_10 {
+			return None
+		}
+		return TallBirchHills
+	case DarkForest:
+		return DarkForestHills
+	case SnowyTaiga:
+		return SnowyTaigaMountains
+	case GiantTreeTaiga:
+		return GiantSpruceTaiga
+	case GiantTreeTaigaHills:
+		return GiantSpruceTaigaHills
+	case WoodedMountains:
+		return ModifiedGravellyMountains
+	case Savanna:
+		return ShatteredSavanna
+	case SavannaPlateau:
+		return ShatteredSavannaPlateau
+	case Badlands:
+		return ErodedBadlands
+	case WoodedBadlandsPlateau:
+		return ModifiedWoodedBadlandsPlateau
+	case BadlandsPlateau:
+		return ModifiedBadlandsPlateau
+	default:
+		return None
+	}
+}

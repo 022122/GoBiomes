@@ -1,8 +1,6 @@
-package constants
+package gobiomes
 
-// Minecraft 版本常量（与 [`GO/cubiomes/biomes.h`](GO/cubiomes/biomes.h:1) 中 enum MCVersion 保持一致）
-//
-// 注意：部分大版本（例如 MC_1_0）是对应补丁版本的别名。
+// Minecraft 版本常量
 const (
 	MC_UNDEF = 0
 	MC_B1_7  = 1

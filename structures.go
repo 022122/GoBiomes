@@ -1,17 +1,6 @@
-package constants
+package gobiomes
 
 // StructureType 对应 cubiomes 的 enum StructureType。
-//
-// 注意：数值必须与 [`GO/cubiomes/finders.h:15`](GO/cubiomes/finders.h:15) 一致。
-// Feature(0) 是 1.13 前用于神庙生成尝试的位置类型。
-//
-// 为了与原 Python 用法一致，这里导出与 C 枚举同名（驼峰）的常量。
-// 例如：Outpost、Village、TrialChambers 等。
-//
-// 参考：[`src/modules/structures.c:1`](src/modules/structures.c:1)
-//
-//go:generate echo "no codegen"
-
 type StructureType int
 
 const (

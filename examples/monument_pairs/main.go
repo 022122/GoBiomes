@@ -13,8 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/scriptlinestudios/gobiomes"
-	"github.com/scriptlinestudios/gobiomes/constants"
+	"gobiomes"
 )
 
 // monument_pairs
@@ -71,7 +70,7 @@ type outJSON struct {
 func main() {
 	var (
 		seed    = flag.Uint64("seed", 20251223, "世界种子(64-bit)")
-		mc      = flag.Int("mc", constants.MC_1_21_1, "版本常量，见 constants/versions.go")
+		mc      = flag.Int("mc", gobiomes.MC_1_21_1, "版本常量")
 		radius  = flag.Int("radius", 0, "若>0：覆盖搜索范围为 [-radius,+radius]（例如 1000000 表示 100w 半径）")
 		minX    = flag.Int("minx", -200000, "最小 X(block)")
 		maxX    = flag.Int("maxx", 200000, "最大 X(block)")
@@ -116,9 +115,9 @@ func main() {
 
 	finder := gobiomes.NewFinder(*mc)
 	gen := gobiomes.NewGenerator(*mc, 0)
-	gen.ApplySeed(*seed, int(constants.DimOverworld))
+	gen.ApplySeed(*seed, gobiomes.DimOverworld)
 
-	sc, err := finder.GetStructureConfig(int(constants.Monument))
+	sc, err := finder.GetStructureConfig(gobiomes.Monument)
 	if err != nil {
 		panic(err)
 	}
@@ -176,16 +175,16 @@ func main() {
 			defer wg.Done()
 			wFinder := gobiomes.NewFinder(*mc)
 			wGen := gobiomes.NewGenerator(*mc, 0)
-			wGen.ApplySeed(*seed, int(constants.DimOverworld))
+			wGen.ApplySeed(*seed, gobiomes.DimOverworld)
 
 			for tk := range tasks {
-				p, err := wFinder.GetStructurePos(int(constants.Monument), *seed, tk.rx, tk.rz)
+				p, err := wFinder.GetStructurePos(gobiomes.Monument, *seed, tk.rx, tk.rz)
 				if err != nil {
 					panic(err)
 				}
 				if p != nil {
 					if p.X >= *minX && p.X <= *maxX && p.Z >= *minZ && p.Z <= *maxZ {
-						if wGen.IsViableStructurePos(int(constants.Monument), p.X, p.Z, 0) {
+						if wGen.IsViableStructurePos(gobiomes.Monument, p.X, p.Z, 0) {
 							found <- pos2{X: p.X, Z: p.Z}
 						}
 					}

@@ -9,8 +9,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/scriptlinestudios/gobiomes"
-	"github.com/scriptlinestudios/gobiomes/constants"
+	"gobiomes"
 )
 
 // 说明
@@ -43,7 +42,7 @@ type result struct {
 func main() {
 	var (
 		seed   = flag.Uint64("seed", 0, "世界种子(64-bit)")
-		mc     = flag.Int("mc", constants.MC_1_21_1, "版本常量，见 constants/versions.go")
+		mc     = flag.Int("mc", gobiomes.MC_1_21_1, "版本常量")
 		minX   = flag.Int("minx", -200000, "最小 X(block)")
 		maxX   = flag.Int("maxx", 200000, "最大 X(block)")
 		minZ   = flag.Int("minz", -200000, "最小 Z(block)")
@@ -64,9 +63,9 @@ func main() {
 
 	finder := gobiomes.NewFinder(*mc)
 	gen := gobiomes.NewGenerator(*mc, 0)
-	gen.ApplySeed(*seed, int(constants.DimOverworld))
+	gen.ApplySeed(*seed, gobiomes.DimOverworld)
 
-	sc, err := finder.GetStructureConfig(int(constants.SwampHut))
+	sc, err := finder.GetStructureConfig(gobiomes.SwampHut)
 	if err != nil {
 		panic(err)
 	}
@@ -88,13 +87,13 @@ func main() {
 
 	for rz := rz0; rz <= rz1; rz++ {
 		for rx := rx0; rx <= rx1; rx++ {
-			p, err := finder.GetStructurePos(int(constants.SwampHut), *seed, rx, rz)
+			p, err := finder.GetStructurePos(gobiomes.SwampHut, *seed, rx, rz)
 			if err != nil {
 				panic(err)
 			}
 			if p != nil {
 				if p.X >= *minX && p.X <= *maxX && p.Z >= *minZ && p.Z <= *maxZ {
-					if gen.IsViableStructurePos(int(constants.SwampHut), p.X, p.Z, 0) {
+					if gen.IsViableStructurePos(gobiomes.SwampHut, p.X, p.Z, 0) {
 						huts = append(huts, hut{X: p.X, Z: p.Z})
 					}
 				}

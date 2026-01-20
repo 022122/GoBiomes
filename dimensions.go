@@ -1,4 +1,4 @@
-package constants
+package gobiomes
 
 // Dimension 维度常量
 type Dimension int
