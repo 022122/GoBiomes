@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"runtime"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/scriptlinestudios/gobiomes"
@@ -53,6 +56,7 @@ func main() {
 	var (
 		seed    = flag.Uint64("seed", 20251223, "世界种子(64-bit)")
 		mc      = flag.Int("mc", constants.MC_1_21_1, "版本常量，见 constants/versions.go")
+		radius  = flag.Int("radius", 0, "若>0：覆盖搜索范围为 [-radius,+radius]（例如 1000000 表示 100w 半径）")
 		minX    = flag.Int("minx", -200000, "最小 X(block)")
 		maxX    = flag.Int("maxx", 200000, "最大 X(block)")
 		minZ    = flag.Int("minz", -200000, "最小 Z(block)")
@@ -61,9 +65,22 @@ func main() {
 		format  = flag.String("format", "json", "输出格式: json 或 md")
 		outPath = flag.String("out", "trial_chambers_pairs.json", "输出文件路径")
 		topK    = flag.Int("top", 5000, "只输出 TopK 对（按权重排序）；计算时仍统计 pairsTotal")
+		workers = flag.Int("workers", runtime.NumCPU(), "并发 worker 数（扫描+配对）；<=0 使用 NumCPU")
 		quiet   = flag.Bool("quiet", false, "安静模式（不打印进度条/提示）")
 	)
 	flag.Parse()
+
+	if *workers <= 0 {
+		*workers = runtime.NumCPU()
+	}
+	if *workers < 1 {
+		*workers = 1
+	}
+
+	if *radius > 0 {
+		*minX, *maxX = -*radius, *radius
+		*minZ, *maxZ = -*radius, *radius
+	}
 
 	if *minX > *maxX {
 		*minX, *maxX = *maxX, *minX
@@ -107,36 +124,82 @@ func main() {
 	rz0 := floorDiv(*minZ, regionBlocks)
 	rz1 := floorDiv(*maxZ, regionBlocks)
 
-	// 1) 扫描区域内所有“可行”的试炼密室位置
+	// 1) 扫描区域内所有“可行”的试炼密室位置（并行）
 	positions := make([]pos, 0, 1024)
 	regionsTotal := int64(rx1-rx0+1) * int64(rz1-rz0+1)
 	var regionsDone int64
-	lastPrint := time.Now()
+
+	type regionTask struct{ rx, rz int }
+	tasks := make(chan regionTask, 4096)
+	found := make(chan pos, 4096)
+
+	// 收集器：避免 positions 数据竞争
+	collectDone := make(chan struct{})
+	go func() {
+		for p := range found {
+			positions = append(positions, p)
+		}
+		close(collectDone)
+	}()
+
+	// 进度条：独立 ticker 读取 atomic 计数
+	var progStop chan struct{}
+	if !*quiet {
+		progStop = make(chan struct{})
+		go func() {
+			t := time.NewTicker(200 * time.Millisecond)
+			defer t.Stop()
+			for {
+				select {
+				case <-t.C:
+					printProgress("scan regions", atomic.LoadInt64(&regionsDone), regionsTotal)
+				case <-progStop:
+					printProgress("scan regions", regionsTotal, regionsTotal)
+					fmt.Println()
+					return
+				}
+			}
+		}()
+	}
+
+	var wg sync.WaitGroup
+	for w := 0; w < *workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// 每个 worker 单独持有 Generator，避免 cgo 状态并发访问
+			wFinder := gobiomes.NewFinder(*mc)
+			wGen := gobiomes.NewGenerator(*mc, 0)
+			wGen.ApplySeed(*seed, int(constants.DimOverworld))
+
+			for tk := range tasks {
+				p, err := wFinder.GetStructurePos(int(constants.TrialChambers), *seed, tk.rx, tk.rz)
+				if err != nil {
+					panic(err)
+				}
+				if p != nil {
+					if p.X >= *minX && p.X <= *maxX && p.Z >= *minZ && p.Z <= *maxZ {
+						if wGen.IsViableStructurePos(int(constants.TrialChambers), p.X, p.Z, 0) {
+							found <- pos{X: p.X, Z: p.Z}
+						}
+					}
+				}
+				atomic.AddInt64(&regionsDone, 1)
+			}
+		}()
+	}
 
 	for rz := rz0; rz <= rz1; rz++ {
 		for rx := rx0; rx <= rx1; rx++ {
-			p, err := finder.GetStructurePos(int(constants.TrialChambers), *seed, rx, rz)
-			if err != nil {
-				panic(err)
-			}
-			if p != nil {
-				if p.X >= *minX && p.X <= *maxX && p.Z >= *minZ && p.Z <= *maxZ {
-					if gen.IsViableStructurePos(int(constants.TrialChambers), p.X, p.Z, 0) {
-						positions = append(positions, pos{X: p.X, Z: p.Z})
-					}
-				}
-			}
-
-			regionsDone++
-			if !*quiet && time.Since(lastPrint) > 200*time.Millisecond {
-				printProgress("scan regions", regionsDone, regionsTotal)
-				lastPrint = time.Now()
-			}
+			tasks <- regionTask{rx: rx, rz: rz}
 		}
 	}
+	close(tasks)
+	wg.Wait()
+	close(found)
+	<-collectDone
 	if !*quiet {
-		printProgress("scan regions", regionsTotal, regionsTotal)
-		fmt.Println()
+		close(progStop)
 	}
 
 	if len(positions) == 0 {
@@ -144,7 +207,7 @@ func main() {
 		return
 	}
 
-	// 2) 二联查找：网格加速 + TopK 小顶堆（避免输出/内存爆炸）
+	// 2) 二联查找：网格加速 + TopK 小顶堆（避免输出/内存爆炸）+ 并行
 	cellSize := int(math.Ceil(*maxD))
 	if cellSize < 1 {
 		cellSize = 1
@@ -156,40 +219,95 @@ func main() {
 		cells[[2]int{cx, cz}] = append(cells[[2]int{cx, cz}], i)
 	}
 
-	pq := make(pairHeap, 0, *topK)
 	var checked int64
 	var pairsTotal int64
-	lastPrint = time.Now()
 
-	for i, a := range positions {
-		cx := floorDiv(a.X, cellSize)
-		cz := floorDiv(a.Z, cellSize)
-		for dz := -1; dz <= 1; dz++ {
-			for dx := -1; dx <= 1; dx++ {
-				lst := cells[[2]int{cx + dx, cz + dz}]
-				for _, j := range lst {
-					if j <= i {
-						continue
-					}
-					b := positions[j]
-					d := dist(a, b)
-					if d <= *maxD {
-						pairsTotal++
-						w := (*maxD - d)
-						pushTopK(&pq, pair{A: a, B: b, Dist: d, Weight: w}, *topK)
-					}
-					checked++
+	type pairTask struct{ i0, i1 int }
+	pairTasks := make(chan pairTask, 1024)
+	pairRes := make(chan []pair, *workers)
+
+	// calc pairs 进度
+	if !*quiet {
+		progStop := make(chan struct{})
+		go func() {
+			t := time.NewTicker(300 * time.Millisecond)
+			defer t.Stop()
+			for {
+				select {
+				case <-t.C:
+					fmt.Printf("\r[calc pairs] checked=%d pairsTotal=%d", atomic.LoadInt64(&checked), atomic.LoadInt64(&pairsTotal))
+				case <-progStop:
+					fmt.Printf("\r[calc pairs] checked=%d pairsTotal=%d\n", atomic.LoadInt64(&checked), atomic.LoadInt64(&pairsTotal))
+					return
 				}
 			}
-		}
-
-		if !*quiet && time.Since(lastPrint) > 300*time.Millisecond {
-			fmt.Printf("\r[calc pairs] checked=%d pairsTotal=%d topK=%d", checked, pairsTotal, len(pq))
-			lastPrint = time.Now()
-		}
+		}()
+		defer close(progStop)
 	}
-	if !*quiet {
-		fmt.Printf("\r[calc pairs] checked=%d pairsTotal=%d topK=%d\n", checked, pairsTotal, len(pq))
+
+	var wgPairs sync.WaitGroup
+	for w := 0; w < *workers; w++ {
+		wgPairs.Add(1)
+		go func() {
+			defer wgPairs.Done()
+			local := make(pairHeap, 0, *topK)
+			for tk := range pairTasks {
+				for i := tk.i0; i < tk.i1; i++ {
+					a := positions[i]
+					cx := floorDiv(a.X, cellSize)
+					cz := floorDiv(a.Z, cellSize)
+					for dz := -1; dz <= 1; dz++ {
+						for dx := -1; dx <= 1; dx++ {
+							lst := cells[[2]int{cx + dx, cz + dz}]
+							for _, j := range lst {
+								if j <= i {
+									continue
+								}
+								b := positions[j]
+								d := dist(a, b)
+								if d <= *maxD {
+									atomic.AddInt64(&pairsTotal, 1)
+									w := (*maxD - d)
+									pushTopK(&local, pair{A: a, B: b, Dist: d, Weight: w}, *topK)
+								}
+								atomic.AddInt64(&checked, 1)
+							}
+						}
+					}
+				}
+			}
+
+			// local heap -> slice (无序)，发回主线程合并
+			out := make([]pair, 0, len(local))
+			for local.Len() > 0 {
+				out = append(out, heap.Pop(&local).(pair))
+			}
+			pairRes <- out
+		}()
+	}
+
+	// 分块派发任务：按 i 分块，减少 channel 发送开销
+	chunk := 4096
+	if chunk < 1 {
+		chunk = 1
+	}
+	for i := 0; i < len(positions); i += chunk {
+		j := i + chunk
+		if j > len(positions) {
+			j = len(positions)
+		}
+		pairTasks <- pairTask{i0: i, i1: j}
+	}
+	close(pairTasks)
+	wgPairs.Wait()
+	close(pairRes)
+
+	// 合并所有 worker 的 topK -> 全局 topK
+	pq := make(pairHeap, 0, *topK)
+	for lst := range pairRes {
+		for _, p := range lst {
+			pushTopK(&pq, p, *topK)
+		}
 	}
 
 	// 堆 -> 切片 -> 按权重降序输出
