@@ -75,6 +75,20 @@ func main() {
 		panic("invalid region size")
 	}
 
+	// Debug/解释：基于 structure config 估算“理论最小间距”，用于判断为何 pairs 可能为 0。
+	// cubiomes 的 getStructurePos 最终：pos = ((reg*regionSize + off) << 4)
+	// 其中 off 在 [0, chunkRange-1]。
+	// 因此相邻区域最小轴向距离（blocks）≈ (regionSize - (chunkRange-1)) * 16。
+	minAxisDist := float64(int(sc.RegionSize)-int(sc.ChunkRange)+1) * 16
+	if !*quiet {
+		fmt.Printf("TrialChambers config: regionSize=%d chunks, chunkRange=%d chunks, minAxisDist≈%.0f blocks\n",
+			sc.RegionSize, sc.ChunkRange, minAxisDist)
+		if minAxisDist > *maxD {
+			fmt.Printf("提示：minAxisDist(≈%.0f) > maxd(%.0f)，理论上不可能存在两处生成尝试距离≤maxd，因此 pairs=0 属于正常结果。\n",
+				minAxisDist, *maxD)
+		}
+	}
+
 	rx0 := floorDiv(*minX, regionBlocks)
 	rx1 := floorDiv(*maxX, regionBlocks)
 	rz0 := floorDiv(*minZ, regionBlocks)
